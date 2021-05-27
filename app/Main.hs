@@ -1,7 +1,6 @@
 module Main (main) where
 
-import DlpackHs (someFunc)
-
+import DLPack
 
 main :: IO ()
-main = someFunc
+main = putStrLn "Hello world!"

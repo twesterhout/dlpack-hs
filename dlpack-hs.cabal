@@ -1,6 +1,6 @@
 cabal-version:       2.4
 name:                dlpack-hs
-version:             0.0.0.0
+version:             0.0.1.0
 synopsis:            Bindings to DLPack: Open In Memory Tensor Structure
 description:         Bindings to DLPack: Open In Memory Tensor Structure
 homepage:            https://github.com/twesterhout/dlpack-hs
@@ -14,14 +14,14 @@ category:            Math
 build-type:          Simple
 extra-doc-files:     README.md
                      CHANGELOG.md
-tested-with:         GHC == 8.8.3
+tested-with:         GHC == 8.10.4
 
 source-repository head
   type:                git
   location:            https://github.com/twesterhout/dlpack-hs.git
 
 common common-options
-  build-depends:       base ^>= 4.13.0.0
+  build-depends:       base >= 4.13.0.0
   
   ghc-options:         -Wall
                        -Wcompat
@@ -39,11 +39,12 @@ common common-options
     ghc-options:       -Wmissing-deriving-strategies
 
   default-language:    Haskell2010
+  default-extensions:  DerivingStrategies
 
 library
   import:              common-options
   hs-source-dirs:      src
-  exposed-modules:     DlpackHs
+  exposed-modules:     DLPack
 
 executable dlpack-hs
   import:              common-options
