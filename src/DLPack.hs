@@ -148,7 +148,7 @@ data DLTensor = DLTensor
     dlTensorDType :: {-# UNPACK #-} !DLDataType,
     dlTensorShape :: {-# UNPACK #-} !(Ptr Int64),
     dlTensorStrides :: {-# UNPACK #-} !(Ptr Int64),
-    dlTensorByteOffset :: {-# UNPACK #-} !(Ptr Word64)
+    dlTensorByteOffset :: {-# UNPACK #-} !Word64
   }
   deriving stock (Show, Eq)
 
