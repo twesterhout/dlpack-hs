@@ -12,14 +12,24 @@ module DLPack
     DLDataType (..),
     DLTensor (..),
     DLManagedTensor (..),
+    IsDLTensor (..),
+    tensorToFlatList,
+    foldLoop1D,
+    foldLoopND,
   )
 where
 
+import Data.Functor.Identity
 import Data.Int
+import Data.Primitive (Prim)
+import qualified Data.Primitive.Ptr as P
 import Data.Word
 import Foreign.C.Types (CInt)
-import Foreign.Ptr (FunPtr, Ptr)
+import Foreign.Marshal.Array (withArrayLen)
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, plusPtr)
 import Foreign.Storable
+import Prelude hiding (init)
 
 -- | Underlying DLPack version
 dlVersion :: (Int, Int)
@@ -192,3 +202,54 @@ instance Storable DLManagedTensor where
     pokeByteOff p 0 (dlManagedTensorTensor x)
     pokeByteOff p 48 (dlManagedTensorManagerCxt x)
     pokeByteOff p 56 (dlManagedTensorDeleter x)
+
+class Monad m => IsDLTensor m a where
+  withDLTensor :: a -> (DLTensor -> m b) -> m b
+
+foldLoop1D :: Monad m => a -> (a -> Bool) -> (a -> a) -> (b -> a -> m b) -> b -> m b
+foldLoop1D start cond inc combine init = go start init
+  where
+    go !x !acc
+      | cond x = acc `combine` x >>= go (inc x)
+      | otherwise = return acc
+{-# INLINE foldLoop1D #-}
+
+foldLoopND :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
+foldLoopND = go
+  where
+    go :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
+    go _ [] [] _ acc = return acc
+    go !start (!size : []) (!stride : []) combine acc =
+      let combine' acc' !i = combine acc' (start + i)
+       in foldLoop1D 0 (< size * stride) (+ stride) combine' acc
+    go !start (!size : sizes) (!stride : strides) combine acc =
+      let combine' acc' !i = go (start + i) sizes strides combine acc'
+       in foldLoop1D 0 (< size * stride) (+ stride) combine' acc
+    go _ _ _ _ _ = error "shape and strides have different lengths"
+
+tensorToFlatList :: forall a. Prim a => DLTensor -> [a]
+tensorToFlatList t = runIdentity $ foldLoopND (dlTensorNDim t) shape strides combine []
+  where
+    buildList p = (\i -> fromIntegral $ P.indexOffPtr p i) <$> [0 .. dlTensorNDim t - 1]
+    strides = buildList (dlTensorStrides t)
+    shape = buildList (dlTensorShape t)
+    combine xs !i =
+      let !p = dlTensorData t `plusPtr` fromIntegral (dlTensorByteOffset t)
+          !x = P.indexOffPtr (castPtr p) i
+       in return $ x : xs
+
+instance IsDLTensor IO [Double] where
+  withDLTensor xs action =
+    withArrayLen xs $ \size dataPtr ->
+      with (fromIntegral size) $ \shapePtr ->
+        with 1 $ \stridePtr ->
+          action
+            DLTensor
+              { dlTensorData = castPtr dataPtr,
+                dlTensorDevice = DLDevice DLCPU 0,
+                dlTensorNDim = 1,
+                dlTensorDType = DLDataType DLFloat 64 1,
+                dlTensorShape = shapePtr,
+                dlTensorStrides = stridePtr,
+                dlTensorByteOffset = 0
+              }

@@ -22,6 +22,7 @@ source-repository head
 
 common common-options
   build-depends:       base >= 4.13.0.0
+                     , primitive
   
   ghc-options:         -Wall
                        -Wcompat
@@ -40,6 +41,10 @@ common common-options
 
   default-language:    Haskell2010
   default-extensions:  DerivingStrategies
+                     , MultiParamTypeClasses
+                     , BangPatterns
+                     , ScopedTypeVariables
+                     , FlexibleInstances
 
 library
   import:              common-options
