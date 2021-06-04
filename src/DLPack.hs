@@ -12,22 +12,28 @@ module DLPack
     DLDataType (..),
     DLTensor (..),
     DLManagedTensor (..),
+    IsDLDataType (..),
     IsDLTensor (..),
     tensorToFlatList,
-    foldLoop1D,
-    foldLoopND,
+    fold1,
+    loop1,
+    foldN,
+    viaContiguousBuffer,
   )
 where
 
+import Control.Monad (when)
+import Control.Monad.Primitive (PrimMonad)
 import Data.Functor.Identity
 import Data.Int
 import Data.Primitive (Prim)
+import Data.Primitive.PrimArray
 import qualified Data.Primitive.Ptr as P
 import Data.Word
 import Foreign.C.Types (CInt)
 import Foreign.Marshal.Array (withArrayLen)
-import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, plusPtr)
+-- import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable
 import Prelude hiding (init)
 
@@ -203,32 +209,43 @@ instance Storable DLManagedTensor where
     pokeByteOff p 48 (dlManagedTensorManagerCxt x)
     pokeByteOff p 56 (dlManagedTensorDeleter x)
 
+class IsDLDataType a where
+  dlDataTypeOf :: proxy a -> DLDataType
+
+instance IsDLDataType Float where dlDataTypeOf _ = DLDataType DLFloat 64 1
+
+instance IsDLDataType Double where dlDataTypeOf _ = DLDataType DLFloat 64 1
+
 class Monad m => IsDLTensor m a where
   withDLTensor :: a -> (DLTensor -> m b) -> m b
 
-foldLoop1D :: Monad m => a -> (a -> Bool) -> (a -> a) -> (b -> a -> m b) -> b -> m b
-foldLoop1D start cond inc combine init = go start init
+fold1 :: Monad m => a -> (a -> Bool) -> (a -> a) -> (b -> a -> m b) -> b -> m b
+fold1 start cond inc combine init = go start init
   where
     go !x !acc
       | cond x = acc `combine` x >>= go (inc x)
       | otherwise = return acc
-{-# INLINE foldLoop1D #-}
+{-# INLINE fold1 #-}
 
-foldLoopND :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
-foldLoopND = go
+loop1 :: Monad m => a -> (a -> Bool) -> (a -> a) -> (a -> m ()) -> m ()
+loop1 start cond inc f = fold1 start cond inc (\() x -> f x) ()
+{-# INLINE loop1 #-}
+
+foldN :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
+foldN = go
   where
     go :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
     go _ [] [] _ acc = return acc
     go !start (!size : []) (!stride : []) combine acc =
       let combine' acc' !i = combine acc' (start + i)
-       in foldLoop1D 0 (< size * stride) (+ stride) combine' acc
+       in fold1 0 (< size * stride) (+ stride) combine' acc
     go !start (!size : sizes) (!stride : strides) combine acc =
       let combine' acc' !i = go (start + i) sizes strides combine acc'
-       in foldLoop1D 0 (< size * stride) (+ stride) combine' acc
+       in fold1 0 (< size * stride) (+ stride) combine' acc
     go _ _ _ _ _ = error "shape and strides have different lengths"
 
 tensorToFlatList :: forall a. Prim a => DLTensor -> [a]
-tensorToFlatList t = runIdentity $ foldLoopND (dlTensorNDim t) shape strides combine []
+tensorToFlatList t = runIdentity $ foldN (dlTensorNDim t) shape strides combine []
   where
     buildList p = (\i -> fromIntegral $ P.indexOffPtr p i) <$> [0 .. dlTensorNDim t - 1]
     strides = buildList (dlTensorStrides t)
@@ -238,18 +255,49 @@ tensorToFlatList t = runIdentity $ foldLoopND (dlTensorNDim t) shape strides com
           !x = P.indexOffPtr (castPtr p) i
        in return $ x : xs
 
+withListN :: (Prim a, PrimMonad m) => Int -> [a] -> (Ptr a -> m b) -> m b
+withListN n xs action = do
+  array <- newAlignedPinnedPrimArray n
+  let go i []
+        | i == n = return ()
+        | otherwise =
+          error $
+            "list is shorter than indicated: " <> show i <> " < " <> show n
+      go !i (y : ys)
+        | i < n = writePrimArray array i y >> go (i + 1) ys
+        | otherwise =
+          error $
+            "list is shorter than indicated: " <> show (length xs) <> " > " <> show n
+  go 0 xs
+  action (mutablePrimArrayContents array)
+
+viaContiguousBuffer :: (IsDLDataType a, PrimMonad m) => Ptr a -> [Int] -> [Int] -> (DLTensor -> m b) -> m b
+viaContiguousBuffer dataPtr shape strides action =
+  withListN ndim (fromIntegral <$> shape) $ \shapePtr ->
+    withListN ndim (fromIntegral <$> strides) $ \stridesPtr ->
+      action
+        DLTensor
+          { dlTensorData = castPtr dataPtr,
+            dlTensorDevice = DLDevice DLCPU 0,
+            dlTensorNDim = ndim,
+            dlTensorDType = dlDataTypeOf dataPtr,
+            dlTensorShape = shapePtr,
+            dlTensorStrides = stridesPtr,
+            dlTensorByteOffset = 0
+          }
+  where
+    !ndim = length shape
+
 instance IsDLTensor IO [Double] where
-  withDLTensor xs action =
-    withArrayLen xs $ \size dataPtr ->
-      with (fromIntegral size) $ \shapePtr ->
-        with 1 $ \stridePtr ->
-          action
-            DLTensor
-              { dlTensorData = castPtr dataPtr,
-                dlTensorDevice = DLDevice DLCPU 0,
-                dlTensorNDim = 1,
-                dlTensorDType = DLDataType DLFloat 64 1,
-                dlTensorShape = shapePtr,
-                dlTensorStrides = stridePtr,
-                dlTensorByteOffset = 0
-              }
+  withDLTensor xs action = withArrayLen xs $ \size dataPtr ->
+    viaContiguousBuffer dataPtr [size] [1] action
+
+instance IsDLTensor IO [[Double]] where
+  withDLTensor [] action = viaContiguousBuffer (nullPtr :: Ptr Double) [0, 0] [1, 1] action
+  withDLTensor l@(x : _) action = do
+    let n = length l
+        m = length x
+    withArrayLen (mconcat l) $ \size dataPtr -> do
+      when (n * m /= size) $
+        error $ "list has wrong shape: " <> show l
+      viaContiguousBuffer dataPtr [n, m] [m, 1] action
