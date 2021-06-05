@@ -45,6 +45,7 @@ common common-options
                      , BangPatterns
                      , ScopedTypeVariables
                      , FlexibleInstances
+                     , TypeApplications
 
 library
   import:              common-options

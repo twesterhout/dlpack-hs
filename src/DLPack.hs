@@ -245,7 +245,7 @@ foldN = go
     go _ _ _ _ _ = error "shape and strides have different lengths"
 
 tensorToFlatList :: forall a. Prim a => DLTensor -> [a]
-tensorToFlatList t = runIdentity $ foldN (dlTensorNDim t) shape strides combine []
+tensorToFlatList t = reverse $ runIdentity $ foldN 0 shape strides combine []
   where
     buildList p = (\i -> fromIntegral $ P.indexOffPtr p i) <$> [0 .. dlTensorNDim t - 1]
     strides = buildList (dlTensorStrides t)
@@ -253,7 +253,7 @@ tensorToFlatList t = runIdentity $ foldN (dlTensorNDim t) shape strides combine 
     combine xs !i =
       let !p = dlTensorData t `plusPtr` fromIntegral (dlTensorByteOffset t)
           !x = P.indexOffPtr (castPtr p) i
-       in return $ x : xs
+       in return (x : xs)
 
 withListN :: (Prim a, PrimMonad m) => Int -> [a] -> (Ptr a -> m b) -> m b
 withListN n xs action = do
