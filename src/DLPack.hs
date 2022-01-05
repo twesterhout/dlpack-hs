@@ -1,3 +1,9 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+
 -- |
 -- Copyright: (c) 2021 Tom Westerhout
 -- SPDX-License-Identifier: Apache-2.0
@@ -7,39 +13,55 @@
 module DLPack
   ( dlVersion,
     DLDeviceType (..),
+    KnownDLDeviceType,
+    -- natToInt,
+    -- reifyDeviceType,
     DLDevice (..),
     DLDataTypeCode (..),
     DLDataType (..),
     DLTensor (..),
-    DLManagedTensor (..),
+    -- DLManagedTensor (..),
     IsDLDataType (..),
     IsDLTensor (..),
-    tensorToFlatList,
-    fold1,
-    loop1,
-    foldN,
+    -- tensorToFlatList,
+    -- fold1,
+    -- loop1,
+    -- foldN,
     viaContiguousBuffer,
   )
 where
 
 import Control.Monad (when)
 import Control.Monad.Primitive (PrimMonad)
+import Control.Monad.ST
+import Data.Complex
 import Data.Functor.Identity
 import Data.Int
+import Data.Kind (Type)
 import Data.Primitive (Prim)
 import Data.Primitive.PrimArray
 import qualified Data.Primitive.Ptr as P
-import Data.Word
-import Foreign.C.Types (CInt)
-import Foreign.Marshal.Array (withArrayLen)
+import Data.Proxy
 -- import Foreign.Marshal.Utils (with)
+
+import Data.Word
+import Foreign.C.Types
+import Foreign.Marshal.Array (withArrayLen)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable
+import qualified GHC.Exts as GHC
+import GHC.Stack (HasCallStack)
+import GHC.TypeLits
 import Prelude hiding (init)
+
+natToInt :: forall n. KnownNat n => Int
+natToInt = fromIntegral $ GHC.TypeLits.natVal (Proxy @n)
+{-# INLINE natToInt #-}
 
 -- | Underlying DLPack version
 dlVersion :: (Int, Int)
 dlVersion = (0, 5)
+{-# INLINE dlVersion #-}
 
 -- | The device type in 'DLDevice'.
 data DLDeviceType
@@ -67,6 +89,53 @@ data DLDeviceType
     DLCUDAManaged
   deriving stock (Read, Show, Eq)
 
+class KnownDLDeviceType (device :: DLDeviceType) where
+  reifyDeviceType :: DLDeviceType
+
+instance KnownDLDeviceType 'DLCPU where
+  reifyDeviceType = DLCPU
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLCUDA where
+  reifyDeviceType = DLCUDA
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLCUDAHost where
+  reifyDeviceType = DLCUDAHost
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLOpenCL where
+  reifyDeviceType = DLOpenCL
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLVulkan where
+  reifyDeviceType = DLVulkan
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLMetal where
+  reifyDeviceType = DLMetal
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLVPI where
+  reifyDeviceType = DLVPI
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLROCM where
+  reifyDeviceType = DLROCM
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLROCMHost where
+  reifyDeviceType = DLROCMHost
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLExtDev where
+  reifyDeviceType = DLExtDev
+  {-# INLINE reifyDeviceType #-}
+
+instance KnownDLDeviceType 'DLCUDAManaged where
+  reifyDeviceType = DLCUDAManaged
+  {-# INLINE reifyDeviceType #-}
+
 instance Enum DLDeviceType where
   toEnum x = case x of
     1 -> DLCPU
@@ -81,6 +150,7 @@ instance Enum DLDeviceType where
     12 -> DLExtDev
     13 -> DLCUDAManaged
     _ -> error $ "invalid DLDeviceType: " <> show x
+  {-# INLINE toEnum #-}
   fromEnum x = case x of
     DLCPU -> 1
     DLCUDA -> 2
@@ -93,6 +163,7 @@ instance Enum DLDeviceType where
     DLROCMHost -> 11
     DLExtDev -> 12
     DLCUDAManaged -> 13
+  {-# INLINE fromEnum #-}
 
 data DLDevice = DLDevice
   { dlDeviceType :: !DLDeviceType,
@@ -102,14 +173,18 @@ data DLDevice = DLDevice
 
 instance Storable DLDevice where
   sizeOf _ = 8
+  {-# INLINE sizeOf #-}
   alignment _ = 4
+  {-# INLINE alignment #-}
   peek p =
     DLDevice
       <$> (toEnum . (fromIntegral :: CInt -> Int) <$> peekByteOff p 0)
       <*> ((fromIntegral :: CInt -> Int) <$> peekByteOff p 4)
+  {-# INLINE peek #-}
   poke p x = do
     pokeByteOff p 0 . (fromIntegral :: Int -> CInt) . fromEnum . dlDeviceType $ x
     pokeByteOff p 4 (dlDeviceId x)
+  {-# INLINE poke #-}
 
 data DLDataTypeCode
   = DLInt
@@ -129,6 +204,7 @@ instance Enum DLDataTypeCode where
     4 -> DLBfloat
     5 -> DLComplex
     _ -> error $ "invalid DLDataTypeCode: " <> show x
+  {-# INLINE toEnum #-}
   fromEnum x = case x of
     DLInt -> 0
     DLUInt -> 1
@@ -136,6 +212,7 @@ instance Enum DLDataTypeCode where
     DLOpaqueHandle -> 3
     DLBfloat -> 4
     DLComplex -> 5
+  {-# INLINE fromEnum #-}
 
 data DLDataType = DLDataType
   { dlDataTypeCode :: !DLDataTypeCode,
@@ -146,16 +223,20 @@ data DLDataType = DLDataType
 
 instance Storable DLDataType where
   sizeOf _ = 4
+  {-# INLINE sizeOf #-}
   alignment _ = 4
+  {-# INLINE alignment #-}
   peek p =
     DLDataType
       <$> (toEnum . (fromIntegral :: Word8 -> Int) <$> peekByteOff p 0)
       <*> ((fromIntegral :: Word8 -> Int) <$> peekByteOff p 1)
       <*> ((fromIntegral :: Word16 -> Int) <$> peekByteOff p 2)
+  {-# INLINE peek #-}
   poke p x = do
     pokeByteOff p 0 . (fromIntegral :: Int -> Word8) . fromEnum . dlDataTypeCode $ x
     pokeByteOff p 1 . (fromIntegral :: Int -> Word8) . dlDataTypeBits $ x
     pokeByteOff p 2 . (fromIntegral :: Int -> Word16) . dlDataTypeLanes $ x
+  {-# INLINE poke #-}
 
 data DLTensor = DLTensor
   { dlTensorData :: {-# UNPACK #-} !(Ptr ()),
@@ -170,7 +251,9 @@ data DLTensor = DLTensor
 
 instance Storable DLTensor where
   sizeOf _ = 8 + 8 + 4 + 4 + 8 + 8 + 8
+  {-# INLINE sizeOf #-}
   alignment _ = 8
+  {-# INLINE alignment #-}
   peek p =
     DLTensor
       <$> peekByteOff p 0
@@ -180,6 +263,7 @@ instance Storable DLTensor where
       <*> peekByteOff p 24
       <*> peekByteOff p 32
       <*> peekByteOff p 40
+  {-# INLINE peek #-}
   poke p x = do
     pokeByteOff p 0 (dlTensorData x)
     pokeByteOff p 8 (dlTensorDevice x)
@@ -188,72 +272,216 @@ instance Storable DLTensor where
     pokeByteOff p 24 (dlTensorShape x)
     pokeByteOff p 32 (dlTensorStrides x)
     pokeByteOff p 40 (dlTensorByteOffset x)
-
-data DLManagedTensor = DLManagedTensor
-  { dlManagedTensorTensor :: !DLTensor,
-    dlManagedTensorManagerCxt :: {-# UNPACK #-} !(Ptr ()),
-    dlManagedTensorDeleter :: {-# UNPACK #-} !(FunPtr (Ptr DLManagedTensor -> IO ()))
-  }
-  deriving stock (Show)
-
-instance Storable DLManagedTensor where
-  sizeOf _ = let x = x :: DLTensor in sizeOf x + 8 + 8
-  alignment _ = let x = x :: DLTensor in alignment x
-  peek p =
-    DLManagedTensor
-      <$> peekByteOff p 0
-      <*> peekByteOff p 48
-      <*> peekByteOff p 56
-  poke p x = do
-    pokeByteOff p 0 (dlManagedTensorTensor x)
-    pokeByteOff p 48 (dlManagedTensorManagerCxt x)
-    pokeByteOff p 56 (dlManagedTensorDeleter x)
+  {-# INLINE poke #-}
 
 class IsDLDataType a where
   dlDataTypeOf :: proxy a -> DLDataType
 
-instance IsDLDataType Float where dlDataTypeOf _ = DLDataType DLFloat 64 1
+fromTag :: forall a proxy. Storable a => DLDataTypeCode -> proxy a -> DLDataType
+fromTag tag _ =
+  DLDataType {dlDataTypeCode = tag, dlDataTypeBits = (sizeOf element * 8), dlDataTypeLanes = 1}
+  where
+    element :: a
+    element = undefined
+{-# INLINE fromTag #-}
 
-instance IsDLDataType Double where dlDataTypeOf _ = DLDataType DLFloat 64 1
+-- {{{ Integral
 
-class Monad m => IsDLTensor m a where
+instance IsDLDataType CChar where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CSChar where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CUChar where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CShort where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CUShort where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CInt where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CUInt where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CLong where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CULong where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CPtrdiff where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CSize where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CLLong where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CULLong where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CBool where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CIntPtr where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CUIntPtr where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Word8 where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Word16 where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Word32 where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Word64 where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Word where
+  dlDataTypeOf = fromTag DLUInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Int8 where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Int16 where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Int32 where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Int64 where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Int where
+  dlDataTypeOf = fromTag DLInt
+  {-# INLINE dlDataTypeOf #-}
+
+-- }}}
+
+-- {{{ Floating point
+
+instance IsDLDataType CFloat where
+  dlDataTypeOf = fromTag DLFloat
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Float where
+  dlDataTypeOf = fromTag DLFloat
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType CDouble where
+  dlDataTypeOf = fromTag DLFloat
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType Double where
+  dlDataTypeOf = fromTag DLFloat
+  {-# INLINE dlDataTypeOf #-}
+
+-- }}}
+
+-- {{{ Complex
+
+instance IsDLDataType (Complex CFloat) where
+  dlDataTypeOf = fromTag DLComplex
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType (Complex Float) where
+  dlDataTypeOf = fromTag DLComplex
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType (Complex CDouble) where
+  dlDataTypeOf = fromTag DLComplex
+  {-# INLINE dlDataTypeOf #-}
+
+instance IsDLDataType (Complex Double) where
+  dlDataTypeOf = fromTag DLComplex
+  {-# INLINE dlDataTypeOf #-}
+
+-- }}}
+
+class (Monad m) => IsDLTensor m a where
   withDLTensor :: a -> (DLTensor -> m b) -> m b
 
-fold1 :: Monad m => a -> (a -> Bool) -> (a -> a) -> (b -> a -> m b) -> b -> m b
-fold1 start cond inc combine init = go start init
-  where
-    go !x !acc
-      | cond x = acc `combine` x >>= go (inc x)
-      | otherwise = return acc
-{-# INLINE fold1 #-}
+-- dlRowMajorStride :: DLTensor device rank a -> Maybe Int
+-- dlRowMajorStride t = let !f = go 0 in f
+--   where
+--     go !i
+--       | i < rank - 1 =
+--         let !n₂ = P.indexOffPtr shape (i + 1)
+--             !s₁ = P.indexOffPtr stride i
+--             !s₂ = P.indexOffPtr stride (i + 1)
+--          in if s₁ `div` s₂ == n₁ then go (i + 1) else False
+--       | otherwise = True
+--
+-- isColumnMajorLike :: Int -> Ptr Int64 -> Ptr Int64 -> Bool
+-- isColumnMajorLike !rank !shape !stride = let !f = go 0 in f
+--   where
+--     go !i
+--       | i < rank - 1 =
+--         let !n₁ = P.indexOffPtr shape i
+--             !s₁ = P.indexOffPtr stride i
+--             !s₂ = P.indexOffPtr stride (i + 1)
+--          in if s₂ `div` s₁ == n₁ then go (i + 1) else False
+--       | otherwise = True
 
-loop1 :: Monad m => a -> (a -> Bool) -> (a -> a) -> (a -> m ()) -> m ()
-loop1 start cond inc f = fold1 start cond inc (\() x -> f x) ()
-{-# INLINE loop1 #-}
+-- toList1D :: forall a. Prim a => DLTensor 'DLCPU 1 a -> [a]
+-- toList1D t = runST $ go [] (stride * (extent - 1))
+--   where
+--     !extent = dlExtent t 0
+--     !stride = dlStride t 0
+--     !p = dlTensorData t `plusPtr` fromIntegral (dlTensorByteOffset t)
+--     go :: PrimMonad m => [a] -> Int -> m [a]
+--     go acc !i
+--       | i >= 0 = do !x <- P.readOffPtr p i; go (x : acc) (i - stride)
+--       | otherwise = pure acc
+--
+-- chunksOf :: HasCallStack => Int -> [a] -> [[a]]
+-- chunksOf k xs = undefined
 
-foldN :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
-foldN = go
-  where
-    go :: Monad m => Int -> [Int] -> [Int] -> (b -> Int -> m b) -> b -> m b
-    go _ [] [] _ acc = return acc
-    go !start (!size : []) (!stride : []) combine acc =
-      let combine' acc' !i = combine acc' (start + i)
-       in fold1 0 (< size * stride) (+ stride) combine' acc
-    go !start (!size : sizes) (!stride : strides) combine acc =
-      let combine' acc' !i = go (start + i) sizes strides combine acc'
-       in fold1 0 (< size * stride) (+ stride) combine' acc
-    go _ _ _ _ _ = error "shape and strides have different lengths"
-
-tensorToFlatList :: forall a. Prim a => DLTensor -> [a]
-tensorToFlatList t = reverse $ runIdentity $ foldN 0 shape strides combine []
-  where
-    buildList p = (\i -> fromIntegral $ P.indexOffPtr p i) <$> [0 .. dlTensorNDim t - 1]
-    strides = buildList (dlTensorStrides t)
-    shape = buildList (dlTensorShape t)
-    combine xs !i =
-      let !p = dlTensorData t `plusPtr` fromIntegral (dlTensorByteOffset t)
-          !x = P.indexOffPtr (castPtr p) i
-       in return (x : xs)
+-- tensorToFlatList :: forall a device rank. Prim a => DLTensor device rank a -> [a]
+-- tensorToFlatList t = reverse $ runIdentity $ foldN 0 shape strides combine []
+--   where
+--     buildList p = (\i -> fromIntegral $ P.indexOffPtr p i) <$> [0 .. dlTensorNDim t - 1]
+--     strides = buildList (dlTensorStrides t)
+--     shape = buildList (dlTensorShape t)
+--     combine xs !i =
+--       let !p = dlTensorData t `plusPtr` fromIntegral (dlTensorByteOffset t)
+--           !x = P.indexOffPtr (castPtr p) i
+--        in return (x : xs)
 
 withListN :: (Prim a, PrimMonad m) => Int -> [a] -> (Ptr a -> m b) -> m b
 withListN n xs action = do
@@ -271,33 +499,87 @@ withListN n xs action = do
   go 0 xs
   action (mutablePrimArrayContents array)
 
-viaContiguousBuffer :: (IsDLDataType a, PrimMonad m) => Ptr a -> [Int] -> [Int] -> (DLTensor -> m b) -> m b
+viaContiguousBuffer ::
+  (IsDLDataType a, PrimMonad m) =>
+  Ptr a ->
+  [Int] ->
+  [Int] ->
+  (DLTensor -> m b) ->
+  m b
 viaContiguousBuffer dataPtr shape strides action =
-  withListN ndim (fromIntegral <$> shape) $ \shapePtr ->
-    withListN ndim (fromIntegral <$> strides) $ \stridesPtr ->
+  withListN rank (fromIntegral <$> shape) $ \shapePtr ->
+    withListN rank (fromIntegral <$> strides) $ \stridesPtr ->
       action
         DLTensor
           { dlTensorData = castPtr dataPtr,
             dlTensorDevice = DLDevice DLCPU 0,
-            dlTensorNDim = ndim,
+            dlTensorNDim = rank,
             dlTensorDType = dlDataTypeOf dataPtr,
             dlTensorShape = shapePtr,
             dlTensorStrides = stridesPtr,
             dlTensorByteOffset = 0
           }
   where
-    !ndim = length shape
+    !rank = length shape
+{-# INLINE viaContiguousBuffer #-}
 
-instance IsDLTensor IO [Double] where
-  withDLTensor xs action = withArrayLen xs $ \size dataPtr ->
-    viaContiguousBuffer dataPtr [size] [1] action
+-- listShape2D :: [[a]] -> [Int]
+-- listShape2D [] = [0, 0]
+-- listShape2D xs@(x : _) = [length xs, length x]
+--
+-- listShape3D :: [[[a]]] -> [Int]
+-- listShape3D [] = [0, 0, 0]
+-- listShape3D xs@(x : _) = length xs : listShape2D x
+--
+-- listShape4D :: [[[a]]] -> [Int]
+-- listShape4D [] = [0, 0, 0, 0]
+-- listShape4D xs@(x : _) = length xs : listShape3D x
+--
+-- listShape5D :: [[[[a]]]] -> [Int]
+-- listShape5D [] = [0, 0, 0, 0, 0]
+-- listShape5D xs@(x : _) = length xs : listShape4D x
 
-instance IsDLTensor IO [[Double]] where
-  withDLTensor [] action = viaContiguousBuffer (nullPtr :: Ptr Double) [0, 0] [1, 1] action
-  withDLTensor l@(x : _) action = do
-    let n = length l
-        m = length x
-    withArrayLen (mconcat l) $ \size dataPtr -> do
-      when (n * m /= size) $
-        error $ "list has wrong shape: " <> show l
-      viaContiguousBuffer dataPtr [n, m] [m, 1] action
+-- instance Prim a => GHC.IsList (DLTensor 'DLCPU 1 a) where
+--   type Item (DLTensor 'DLCPU 1 a) = a
+--   toList = toList1D
+--   fromList _ = error "IsList instance of DLTensor does not implement toList"
+
+-- instance Prim a => GHC.IsList (DLTensor 'DLCPU 2 a) where
+--   type Item (DLTensor 'DLCPU 2 a) = [a]
+--   toList t = case dlFlatten t of
+--     Just flat -> chunksOf k . toList1D $ flat
+--     Nothing -> error "IsList instance of DLTensor does not support weirdly strided tensors"
+--     where
+--       !k = dlExtent t 1
+--   fromList _ = error "IsList instance of DLTensor does not implement toList"
+
+-- instance Prim a => GHC.IsList (DLTensor 'DLCPU 3 a) where
+--   type Item (DLTensor 'DLCPU 3 a) = [[a]]
+--   toList t = case dlFlatten t of
+--     Just flat -> chunksOf d₁ . chunksOf d₂ . toList1D $ flat
+--     Nothing -> error "IsList instance of DLTensor does not support weirdly strided tensors"
+--     where
+--       !d₁ = dlExtent t 1
+--       !d₂ = dlExtent t 2
+--   fromList _ = error "IsList instance of DLTensor does not implement toList"
+
+-- instance (IsDLDataType a, Storable a) => IsDLTensor IO 'DLCPU 1 a [a] where
+--   withDLTensor xs action = withArrayLen xs $ \size dataPtr ->
+--     viaContiguousBuffer dataPtr [size] [1] action
+--   {-# INLINE withDLTensor #-}
+--
+-- instance (IsDLDataType a, Storable a) => IsDLTensor IO 'DLCPU 2 a [[a]] where
+--   withDLTensor l action = do
+--     let (!n, !m) = listShape2D l
+--     withArrayLen (mconcat l) $ \size dataPtr -> do
+--       when (n * m /= size) $ error "list has wrong shape"
+--       viaContiguousBuffer dataPtr [n, m] [m, 1] action
+--   {-# INLINE withDLTensor #-}
+--
+-- instance (IsDLDataType a, Storable a) => IsDLTensor IO 'DLCPU 3 a [[[a]]] where
+--   withDLTensor l action = do
+--     let (!d₁, !d₂, !d₃) = listShape3D l
+--     withArrayLen (mconcat (mconcat l)) $ \size dataPtr -> do
+--       when (d₁ * d₂ * d₃ /= size) $ error "list has wrong shape"
+--       viaContiguousBuffer dataPtr [d₁, d₂, d₃] [d₂ * d₃, d₃, 1] action
+--   {-# INLINE withDLTensor #-}
