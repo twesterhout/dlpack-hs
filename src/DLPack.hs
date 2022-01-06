@@ -1,8 +1,11 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- |
 -- Copyright: (c) 2021 Tom Westerhout
@@ -522,6 +525,90 @@ viaContiguousBuffer dataPtr shape strides action =
   where
     !rank = length shape
 {-# INLINE viaContiguousBuffer #-}
+
+class
+  (Monad m, KnownNat d, IsDLDataType (ListElement a)) =>
+  ListIsDLTensor (m :: Type -> Type) (d :: Nat) (a :: Type)
+  where
+  listWithDLTensor :: proxy d -> a -> (DLTensor -> m b) -> m b
+
+listShape2 :: [[a]] -> (Int, Int)
+listShape2 [] = (0, 0)
+listShape2 xs@(x : _) = (length xs, length x)
+{-# INLINE listShape2 #-}
+
+listShape3 :: [[[a]]] -> (Int, Int, Int)
+listShape3 [] = (0, 0, 0)
+listShape3 xs@(x : _) = let (d₁, d₂) = listShape2 x in (length xs, d₁, d₂)
+{-# INLINE listShape3 #-}
+
+listShape4 :: [[[[a]]]] -> (Int, Int, Int, Int)
+listShape4 [] = (0, 0, 0, 0)
+listShape4 xs@(x : _) = let (d₁, d₂, d₃) = listShape3 x in (length xs, d₁, d₂, d₃)
+{-# INLINE listShape4 #-}
+
+listShape5 :: [[[[[a]]]]] -> (Int, Int, Int, Int, Int)
+listShape5 [] = (0, 0, 0, 0, 0)
+listShape5 xs@(x : _) = let (d₁, d₂, d₃, d₄) = listShape4 x in (length xs, d₁, d₂, d₃, d₄)
+{-# INLINE listShape5 #-}
+
+instance
+  (PrimMonad m, ListElement [a] ~ a, IsDLDataType a, Prim a) =>
+  ListIsDLTensor m 1 [a]
+  where
+  listWithDLTensor _ xs action = withListN d₀ xs $ \ptr ->
+    viaContiguousBuffer ptr [d₀] [1] action
+    where
+      d₀ = length xs
+
+instance
+  (PrimMonad m, ListElement [[a]] ~ a, IsDLDataType a, Prim a) =>
+  ListIsDLTensor m 2 [[a]]
+  where
+  listWithDLTensor _ xs action =
+    withListN (d₀ * d₁) (mconcat xs) $ \ptr ->
+      viaContiguousBuffer ptr [d₀, d₁] [d₁, 1] action
+    where
+      (d₀, d₁) = listShape2 xs
+
+instance
+  (PrimMonad m, ListElement [[[a]]] ~ a, IsDLDataType a, Prim a) =>
+  ListIsDLTensor m 3 [[[a]]]
+  where
+  listWithDLTensor _ xs action =
+    withListN (d₀ * d₁ * d₂) (mconcat . mconcat $ xs) $ \ptr ->
+      viaContiguousBuffer ptr [d₀, d₁, d₂] [d₁ * d₂, d₂, 1] action
+    where
+      (d₀, d₁, d₂) = listShape3 xs
+
+instance
+  (PrimMonad m, ListElement [[[[a]]]] ~ a, IsDLDataType a, Prim a) =>
+  ListIsDLTensor m 4 [[[[a]]]]
+  where
+  listWithDLTensor _ xs action =
+    withListN (d₀ * d₁ * d₂ * d₃) (mconcat . mconcat . mconcat $ xs) $ \ptr ->
+      viaContiguousBuffer ptr [d₀, d₁, d₂, d₃] [d₁ * d₂ * d₃, d₂ * d₃, d₃, 1] action
+    where
+      (d₀, d₁, d₂, d₃) = listShape4 xs
+
+type family IsFinal a where
+  IsFinal [a] = 'False
+  IsFinal a = 'True
+
+type family ListElement' a b where
+  ListElement' a 'True = a
+  ListElement' [a] 'False = ListElement' a (IsFinal a)
+
+type ListElement (a :: Type) = ListElement' a (IsFinal a)
+
+type family ListDimension' (n :: Nat) (a :: Type) where
+  ListDimension' n [a] = ListDimension' (n + 1) a
+  ListDimension' n a = n
+
+type ListDimension (a :: Type) = ListDimension' 0 a
+
+instance (Monad m, ListIsDLTensor m (ListDimension [t]) [t]) => IsDLTensor m [t] where
+  withDLTensor = listWithDLTensor (Proxy :: Proxy (ListDimension [t]))
 
 -- listShape2D :: [[a]] -> [Int]
 -- listShape2D [] = [0, 0]
