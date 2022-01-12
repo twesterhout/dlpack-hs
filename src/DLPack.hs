@@ -466,6 +466,17 @@ dlExpectDType t
     !got = dlTensorDType t
 {-# INLINE dlExpectDType #-}
 
+dlExpectDevice :: DLDevice -> DLTensor -> Either Text ()
+dlExpectDevice expected t
+  | expected == got = Right ()
+  | otherwise =
+    Left . T.pack $
+      "expected the tensor to be on " <> show expected <> ", but it is on "
+        <> show got
+  where
+    !got = dlTensorDevice t
+{-# INLINE dlExpectDevice #-}
+
 dlExpectNDim :: Int -> DLTensor -> Either Text ()
 dlExpectNDim expected t
   | expected == got = Right ()
@@ -477,6 +488,37 @@ dlExpectNDim expected t
   where
     !got = dlTensorNDim t
 {-# INLINE dlExpectNDim #-}
+
+dlTensorLength :: DLTensor -> Int
+dlTensorLength t
+  | rank > 0 = fromIntegral $ go (P.indexOffPtr (dlTensorShape t) 0) 1
+  | otherwise = 0
+  where
+    !rank = dlTensorNDim t
+    go !acc !i
+      | i < rank = go (acc * P.indexOffPtr (dlTensorShape t) i) (i + 1)
+      | otherwise = acc
+{-# INLINE dlTensorLength #-}
+
+dlExpectShape :: PrimArray Int -> DLTensor -> Either Text ()
+dlExpectShape expected t = do
+  () <- dlExpectNDim rank t
+  let go !i
+        | i < rank =
+          indexPrimArray expected i == fromIntegral (P.indexOffPtr (dlTensorShape t) i)
+            && go (i + 1)
+        | otherwise = True
+  if go 0
+    then Right ()
+    else
+      Left . T.pack $
+        "expected a tensor of shape " <> show expected
+          <> ", but got a tensor of shape "
+          <> show shape
+  where
+    !rank = sizeofPrimArray expected
+    shape = generatePrimArray (dlTensorNDim t) (\i -> P.indexOffPtr (dlTensorShape t) i)
+{-# INLINE dlExpectShape #-}
 
 dlAsStridedVector :: forall a. IsDLDataType a => DLTensor -> Either Text (StridedVectorView a)
 dlAsStridedVector t = do
@@ -495,7 +537,7 @@ dlAsContiguousVector t = do
     else Left . T.pack $ "expected a contiguous DLTensor, but got one with stride " <> show stride
 {-# INLINE dlAsContiguousVector #-}
 
--- dlRowMajorStride :: DLTensor device rank a -> Maybe Int
+-- dlRowMajorStride :: DLTensor -> Maybe Int
 -- dlRowMajorStride t = let !f = go 0 in f
 --   where
 --     go !i
@@ -505,6 +547,25 @@ dlAsContiguousVector t = do
 --             !s₂ = P.indexOffPtr stride (i + 1)
 --          in if s₁ `div` s₂ == n₁ then go (i + 1) else False
 --       | otherwise = True
+
+-- data ShapeInfo = ShapeInfo {shapeSizes :: {-# UNPACK #-} !(PrimArray Int), shapeStrides :: {-# UNPACK #-} !(PrimArray Int)}
+--   deriving stock (Show, Eq)
+
+dlRowMajorStride :: DLTensor -> Maybe Int
+dlRowMajorStride t
+  | rank == 0 = Just 1
+  | otherwise = fromIntegral <$> go (P.indexOffPtr stride 0) 1
+  where
+    !rank = dlTensorNDim t
+    !shape = dlTensorShape t
+    !stride = dlTensorStrides t
+    go !s !i
+      | i < rank =
+        let !n = P.indexOffPtr shape i
+            !s' = P.indexOffPtr stride i
+         in if s `div` s' == n then go s' (i + 1) else Nothing
+      | otherwise = Just s
+
 --
 -- isColumnMajorLike :: Int -> Ptr Int64 -> Ptr Int64 -> Bool
 -- isColumnMajorLike !rank !shape !stride = let !f = go 0 in f
