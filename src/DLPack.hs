@@ -31,6 +31,12 @@ module DLPack
     -- loop1,
     -- foldN,
     viaContiguousBuffer,
+    ContiguousVectorView (..),
+    StridedVectorView (..),
+    dlAsStridedVector,
+    dlAsContiguousVector,
+    dlExpectDType,
+    dlExpectNDim,
   )
 where
 
@@ -45,6 +51,8 @@ import Data.Primitive (Prim)
 import Data.Primitive.PrimArray
 import qualified Data.Primitive.Ptr as P
 import Data.Proxy
+import Data.Text (Text)
+import qualified Data.Text as T
 -- import Foreign.Marshal.Utils (with)
 
 import Data.Word
@@ -438,6 +446,54 @@ instance IsDLDataType (Complex Double) where
 
 class (Monad m) => IsDLTensor m a where
   withDLTensor :: a -> (DLTensor -> m b) -> m b
+
+data ContiguousVectorView a
+  = ContiguousVectorView {-# UNPACK #-} !Int {-# UNPACK #-} !(Ptr a)
+
+data StridedVectorView a
+  = StridedVectorView {-# UNPACK #-} !Int {-# UNPACK #-} !Int {-# UNPACK #-} !(Ptr a)
+
+dlExpectDType :: forall a. IsDLDataType a => DLTensor -> Either Text ()
+dlExpectDType t
+  | expected == got = Right ()
+  | otherwise =
+    Left . T.pack $
+      "expected DLTensor to be of type " <> show expected
+        <> ", but it is of type "
+        <> show got
+  where
+    !expected = dlDataTypeOf (Proxy @a)
+    !got = dlTensorDType t
+{-# INLINE dlExpectDType #-}
+
+dlExpectNDim :: Int -> DLTensor -> Either Text ()
+dlExpectNDim expected t
+  | expected == got = Right ()
+  | otherwise =
+    Left . T.pack $
+      "expected a " <> show expected <> "-dimensional tensor, but got a "
+        <> show got
+        <> "-dimensional one"
+  where
+    !got = dlTensorNDim t
+{-# INLINE dlExpectNDim #-}
+
+dlAsStridedVector :: forall a. IsDLDataType a => DLTensor -> Either Text (StridedVectorView a)
+dlAsStridedVector t = do
+  () <- dlExpectDType @a t
+  () <- dlExpectNDim 1 t
+  let !size = fromIntegral $ P.indexOffPtr (dlTensorShape t) 0
+      !stride = fromIntegral $ P.indexOffPtr (dlTensorStrides t) 0
+  pure $ StridedVectorView size stride (castPtr (dlTensorData t))
+{-# INLINE dlAsStridedVector #-}
+
+dlAsContiguousVector :: forall a. IsDLDataType a => DLTensor -> Either Text (ContiguousVectorView a)
+dlAsContiguousVector t = do
+  (StridedVectorView size stride ptr) <- dlAsStridedVector t
+  if stride == 1
+    then Right $ ContiguousVectorView size ptr
+    else Left . T.pack $ "expected a contiguous DLTensor, but got one with stride " <> show stride
+{-# INLINE dlAsContiguousVector #-}
 
 -- dlRowMajorStride :: DLTensor device rank a -> Maybe Int
 -- dlRowMajorStride t = let !f = go 0 in f

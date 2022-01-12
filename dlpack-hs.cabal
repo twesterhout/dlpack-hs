@@ -23,7 +23,8 @@ source-repository head
 common common-options
   build-depends:       base >= 4.13.0.0
                      , primitive
-  
+                     , text
+
   ghc-options:         -Wall
                        -Wcompat
                        -Widentities
