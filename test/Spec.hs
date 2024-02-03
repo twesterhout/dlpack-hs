@@ -9,8 +9,8 @@ main = do
       a = [1, 2, 3, 4]
       b :: [[Double]]
       b =
-        [ [1, 2, 3],
-          [4, 5, 6]
+        [ [1, 2, 3]
+        , [4, 5, 6]
         ]
   a' <- withDLTensor a $ \t ->
     return (tensorToFlatList @Double t)
